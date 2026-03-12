@@ -206,6 +206,7 @@ def _resolve_call(node: ast.Call, imports: dict[str, str]) -> Optional[CallInfo]
             while isinstance(cur, ast.Attribute):
                 parts.append(cur.attr)
                 cur = cur.value
+            root_name = None
             if isinstance(cur, ast.Name):
                 root_name = cur.id
                 parts.append(root_name)
@@ -219,6 +220,10 @@ def _resolve_call(node: ast.Call, imports: dict[str, str]) -> Optional[CallInfo]
                         callee_func=attr,
                         lineno=node.lineno,
                     )
+                # Раскрываем алиас корня: ui.navigate → nicegui.ui.navigate
+                resolved_root = imports[root_name]
+                middle = ".".join(parts[1:])  # всё между root и attr
+                full_chain = f"{resolved_root}.{middle}" if middle else resolved_root
             else:
                 parts.reverse()
                 full_chain = ".".join(parts)
