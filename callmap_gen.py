@@ -51,6 +51,7 @@ class ProcedureInfo:
     callers: list["CallerInfo"] = field(default_factory=list)
     is_async: bool = False
     decorator_names: list[str] = field(default_factory=list)
+    docstring: str = ""
 
 
 @dataclass
@@ -280,6 +281,7 @@ def parse_file(path: Path, rel_path: str, module_name: str) -> Optional[FileInfo
                     lineno=node.lineno,
                     is_async=isinstance(node, ast.AsyncFunctionDef),
                     decorator_names=_decorator_names(node.decorator_list),
+                    docstring=ast.get_docstring(node) or "",
                 )
                 proc.calls = extract_calls(node.body, imports)
                 file_info.procedures.append(proc)
@@ -294,6 +296,7 @@ def parse_file(path: Path, rel_path: str, module_name: str) -> Optional[FileInfo
                             lineno=child.lineno,
                             is_async=isinstance(child, ast.AsyncFunctionDef),
                             decorator_names=_decorator_names(child.decorator_list),
+                            docstring=ast.get_docstring(child) or "",
                         )
                         inner_proc.calls = extract_calls(child.body, imports)
                         if inner_proc.calls:  # только если есть вызовы
@@ -462,6 +465,16 @@ def render_markdown(files: list[FileInfo], module_index: dict[str, str], project
             lines.append(f"### `{prefix}{proc.qualname}()`{deco}\n")
             lines.append(f"*строка {proc.lineno}*\n")
 
+            if proc.docstring:
+                doc_lines = proc.docstring.strip().splitlines()
+                summary = doc_lines[0].strip()
+                rest = "\n".join(doc_lines[1:]).strip()
+                if rest:
+                    lines.append(f"> {summary}\n")
+                    lines.append(f"> <details><summary>подробнее</summary>\n>\n> ```\n> {rest}\n> ```\n> </details>\n")
+                else:
+                    lines.append(f"> {summary}\n")
+
             if not proc.calls:
                 lines.append("*Внешних вызовов не обнаружено.*\n")
             else:
@@ -570,6 +583,24 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
             if local_calls:
                 by_module["(локальные)"] = local_calls
 
+            # Docstring
+            if proc.docstring:
+                doc_lines = proc.docstring.strip().splitlines()
+                summary = doc_lines[0].strip()
+                rest = "\n".join(l.strip() for l in doc_lines[1:]).strip()
+                if rest:
+                    doc_html = (
+                        f'<div class="proc-doc">' +
+                        f'<span class="doc-summary">{_he(summary)}</span>' +
+                        f'<details class="doc-details"><summary>подробнее</summary>' +
+                        f'<pre class="doc-rest">{_he(rest)}</pre></details>' +
+                        f'</div>'
+                    )
+                else:
+                    doc_html = f'<div class="proc-doc"><span class="doc-summary">{_he(summary)}</span></div>'
+            else:
+                doc_html = ""
+
             if not proc.calls:
                 calls_html = '<div class="no-calls">нет внешних вызовов</div>'
             else:
@@ -624,6 +655,7 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
                 f'    <div class="proc-title">{decos_html}{prefix}<span class="proc-name">{_he(proc.qualname)}</span><span class="proc-parens">()</span></div>'
                 f'    <span class="proc-line">L{proc.lineno}</span>'
                 f'  </div>'
+                f'  {doc_html}'
                 f'  <div class="proc-body">{calls_html}</div>'
                 f'  {callers_html}'
                 f'</div>'
@@ -978,6 +1010,40 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
     flex-shrink: 0;
   }}
 
+  /* ── Docstring ── */
+  .proc-doc {{
+    padding: 5px 14px 6px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(210,153,34,0.05);
+  }}
+  .doc-summary {{
+    font-size: 12px;
+    color: var(--text2);
+    font-style: italic;
+  }}
+  .doc-details {{
+    margin-top: 4px;
+  }}
+  .doc-details summary {{
+    font-size: 11px;
+    color: var(--text3);
+    cursor: pointer;
+    user-select: none;
+  }}
+  .doc-details summary:hover {{ color: var(--text2); }}
+  .doc-rest {{
+    margin-top: 5px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text2);
+    white-space: pre-wrap;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    line-height: 1.5;
+  }}
+
   /* ── Callers ── */
   .callers-section {{
     padding: 6px 14px 8px;
@@ -1181,8 +1247,9 @@ def _build_graph_data(files: list[FileInfo], module_index: dict[str, str]) -> di
                 "file":     f.rel_path,
                 "lineno":   proc.lineno,
                 "is_async": proc.is_async,
-                "n_calls":  len(proc.calls),
+                "n_calls":   len(proc.calls),
                 "n_callers": len(proc.callers),
+                "docstring": proc.docstring.strip().splitlines()[0].strip() if proc.docstring else "",
             }
 
     for f in files:
@@ -1353,6 +1420,7 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
 .p-fn:hover {{ text-decoration:underline; }}
 .p-file {{ font-size:10px; color:var(--text3); font-family:var(--mono); }}
 .p-empty {{ color:var(--text3); font-style:italic; font-size:11px; }}
+.p-doc  {{ font-size:11px; color:var(--text2); font-style:italic; padding:6px 0 2px; line-height:1.5; border-bottom:1px solid var(--border); margin-bottom:6px; }}
 .isolate-btn {{
   width:100%; margin-top:10px;
   background:var(--bg3); border:1px solid var(--border2);
@@ -1406,6 +1474,7 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
 .tt-title {{ font-family:var(--mono); font-size:12px; font-weight:600; color:var(--accent); margin-bottom:5px; word-break:break-all; }}
 .tt-row   {{ color:var(--text2); margin:2px 0; font-size:11px; }}
 .tt-row span {{ color:var(--text); }}
+.tt-doc {{ font-size:11px; color:var(--text2); font-style:italic; margin-top:5px; padding-top:5px; border-top:1px solid var(--border); line-height:1.4; }}
 
 /* ── Legend ── */
 #legend {{
@@ -1705,7 +1774,8 @@ function onHover(e, d) {{
   if (d.lineno) h += `<div class="tt-row">📌 строка <span>${{d.lineno}}</span></div>`;
   h += `<div class="tt-row">→ вызывает: <span>${{edges.out.length}}</span></div>`;
   h += `<div class="tt-row">← вызывается: <span>${{edges.in.length}}</span></div>`;
-  if (d.is_async) h += `<div class="tt-row">⚡ <span>async</span></div>`;
+  if (d.is_async)  h += `<div class="tt-row">⚡ <span>async</span></div>`;
+  if (d.docstring)  h += `<div class="tt-doc">${{d.docstring}}</div>`;
   h += `<div class="tt-row" style="margin-top:5px;color:var(--text3);font-size:10px">Клик — подробности</div>`;
   tt.innerHTML = h; tt.style.display = 'block';
   document.addEventListener('mousemove', moveTip);
@@ -1782,7 +1852,8 @@ function openPanel(d) {{
   html += `<div class="p-label">📄 Файл</div>`;
   html += `<div class="p-meta"><span>${{d.file||'—'}}</span></div>`;
   if (d.lineno) html += `<div class="p-meta">строка <span>${{d.lineno}}</span></div>`;
-  if (d.is_async) html += `<div class="p-meta"><span>async</span></div>`;
+  if (d.is_async)  html += `<div class="p-meta"><span>async</span></div>`;
+  if (d.docstring)  html += `<div class="p-doc">${{d.docstring}}</div>`;
   html += `</div>`;
 
   html += `<div class="p-section"><div class="p-label">→ Вызывает (${{callees.length}})</div>`;
