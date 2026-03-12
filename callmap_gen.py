@@ -103,18 +103,25 @@ _STDLIB_MODULES = {
     "requests", "sqlite3", "csv", "ast", "argparse", "shutil", "glob",
 }
 
+# Пользовательский список исключённых библиотек/модулей.
+# Заполняется из --exclude-libs перед парсингом проекта.
+_EXCLUDED_LIBS: set[str] = set()
+
 
 def _is_noise(call: "CallInfo") -> bool:
-    """True если вызов — шум (builtin, метод на переменной, etc.)."""
+    """True если вызов — шум (builtin, метод на переменной, исключённая библиотека)."""
     # Встроенные функции
     if call.callee_func in _BUILTINS:
         return True
     # Вызов на локальной переменной: ticker.get(), row.items(), response.json()
-    # _resolve_call пометил такие объекты как _VAR_
     if call.callee_module == _VAR_:
         return True
-    # Методы на явно stdlib-модулях: os.path.join, logging.basicConfig...
-    # оставляем их — они несут архитектурную информацию
+    # Исключённые пользователем библиотеки: nicegui, datetime, requests, ...
+    # Проверяем и точное совпадение, и префикс (nicegui.ui → nicegui)
+    if _EXCLUDED_LIBS:
+        mod_root = call.callee_module.split(".")[0] if call.callee_module else ""
+        if call.callee_module in _EXCLUDED_LIBS or mod_root in _EXCLUDED_LIBS:
+            return True
     return False
 
 
@@ -2094,6 +2101,13 @@ def main():
         help="Папки для исключения через запятую (добавляются к стандартным)",
     )
     parser.add_argument(
+        "--exclude-libs",
+        default="",
+        help="Библиотеки/модули для исключения из вызовов через запятую "
+             "(например: nicegui,datetime,requests). "
+             "Поддерживаются префиксы: nicegui исключит и nicegui.ui",
+    )
+    parser.add_argument(
         "--no-locals",
         action="store_true",
         help="Не включать вложенные функции (локальные closure)",
@@ -2140,11 +2154,18 @@ def main():
 
     extra_exclude = set(e.strip() for e in args.exclude.split(",") if e.strip())
 
+    # Заполняем глобальный фильтр библиотек
+    excluded_libs = set(e.strip().lower() for e in args.exclude_libs.split(",") if e.strip())
+    _EXCLUDED_LIBS.clear()
+    _EXCLUDED_LIBS.update(excluded_libs)
+
     print(f"📂 Проект:    {root}")
     for out_path, out_fmt in outputs:
         print(f"📄 Вывод:     {out_path}  [{out_fmt}]")
     if extra_exclude:
-        print(f"🚫 Исключено: {extra_exclude}")
+        print(f"🚫 Исключено (папки): {extra_exclude}")
+    if excluded_libs:
+        print(f"🚫 Исключено (библиотеки): {excluded_libs}")
 
     print("\n🔍 Сканирование файлов...")
     files = scan_project(root, extra_exclude)
