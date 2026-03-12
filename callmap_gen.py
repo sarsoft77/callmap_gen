@@ -1502,6 +1502,7 @@ let isolatedNode   = null;
 let selectedNode   = null;
 let currentNodes   = [];
 let currentLinks   = [];
+let nodeEdges      = {{}};
 
 // ── Init ────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {{
@@ -1618,6 +1619,16 @@ function drawGraph(mode) {{
     .attr('text-anchor','middle')
     .text(d => truncate(d.label, mode==='file'?28:22));
 
+  // ── Индекс рёбер по узлу (для синхронизации тултипа и панели) ───────────────
+  nodeEdges = {{}};
+  nodes.forEach(n => nodeEdges[n.id] = {{ out: [], in: [] }});
+  links.forEach(l => {{
+    const sid = typeof l.source === 'object' ? l.source.id : l.source;
+    const tid = typeof l.target === 'object' ? l.target.id : l.target;
+    if (nodeEdges[sid]) nodeEdges[sid].out.push(l);
+    if (nodeEdges[tid]) nodeEdges[tid].in.push(l);
+  }});
+
   // ── Simulation ─────────────────────────────────────────────────────────────
   simulation = d3.forceSimulation(nodes)
     .force('link',    d3.forceLink(links).id(d=>d.id).distance(mode==='file'?140:80).strength(0.5))
@@ -1687,13 +1698,14 @@ function onHover(e, d) {{
   if (isolatedNode || selectedNode) return;
   highlightNode(d.id);
 
+  const edges = nodeEdges[d.id] || {{ out: [], in: [] }};
   const tt = document.getElementById('tooltip');
   let h = `<div class="tt-title">${{d.label}}</div>`;
-  if (d.file)      h += `<div class="tt-row">📄 <span>${{d.file}}</span></div>`;
-  if (d.lineno)    h += `<div class="tt-row">📌 строка <span>${{d.lineno}}</span></div>`;
-  if (d.n_calls  != null) h += `<div class="tt-row">→ вызывает: <span>${{d.n_calls}}</span></div>`;
-  if (d.n_callers!= null) h += `<div class="tt-row">← вызывается: <span>${{d.n_callers}}</span></div>`;
-  if (d.is_async)  h += `<div class="tt-row">⚡ <span>async</span></div>`;
+  if (d.file)   h += `<div class="tt-row">📄 <span>${{d.file}}</span></div>`;
+  if (d.lineno) h += `<div class="tt-row">📌 строка <span>${{d.lineno}}</span></div>`;
+  h += `<div class="tt-row">→ вызывает: <span>${{edges.out.length}}</span></div>`;
+  h += `<div class="tt-row">← вызывается: <span>${{edges.in.length}}</span></div>`;
+  if (d.is_async) h += `<div class="tt-row">⚡ <span>async</span></div>`;
   h += `<div class="tt-row" style="margin-top:5px;color:var(--text3);font-size:10px">Клик — подробности</div>`;
   tt.innerHTML = h; tt.style.display = 'block';
   document.addEventListener('mousemove', moveTip);
@@ -1761,16 +1773,10 @@ function openPanel(d) {{
   panel.classList.remove('collapsed');
   document.getElementById('panel-title').textContent = d.label + '()';
 
-  // Build callee list from links
-  const callees = [];
-  const callers = [];
-  linkSel.each(l => {{
-    const s = typeof l.source==='object' ? l.source : currentNodes.find(n=>n.id===l.source);
-    const t = typeof l.target==='object' ? l.target : currentNodes.find(n=>n.id===l.target);
-    if (!s||!t) return;
-    if (s.id === d.id) callees.push(t);
-    if (t.id === d.id) callers.push(s);
-  }});
+  // Build callee/caller lists from pre-built edge index (same source as tooltip)
+  const edges   = nodeEdges[d.id] || {{ out: [], in: [] }};
+  const callees = edges.out.map(l => typeof l.target==='object' ? l.target : currentNodes.find(n=>n.id===l.target)).filter(Boolean);
+  const callers = edges.in.map(l  => typeof l.source==='object' ? l.source : currentNodes.find(n=>n.id===l.source)).filter(Boolean);
 
   let html = `<div class="p-section">`;
   html += `<div class="p-label">📄 Файл</div>`;
