@@ -313,6 +313,28 @@ def parse_file(path: Path, rel_path: str, module_name: str) -> Optional[FileInfo
                 _visit_body(node.body, class_name=node.name)
 
     _visit_body(tree.body)
+
+    # ── Код верхнего уровня (<module>) ────────────────────────────────────────
+    # Собираем вызовы из операторов верхнего уровня, которые НЕ являются
+    # определениями функций/классов (они уже обработаны выше).
+    # Это покрывает: if __name__ == "__main__", голые вызовы, присваивания.
+    top_level_stmts = [
+        node for node in tree.body
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef, ast.Import, ast.ImportFrom))
+    ]
+    if top_level_stmts:
+        module_calls = extract_calls(top_level_stmts, imports)
+        if module_calls:
+            module_proc = ProcedureInfo(
+                name="<module>",
+                qualname="<module>",
+                lineno=1,
+                docstring="Код верхнего уровня модуля (вне функций и классов).",
+            )
+            module_proc.calls = module_calls
+            file_info.procedures.append(module_proc)
+
     return file_info
 
 
