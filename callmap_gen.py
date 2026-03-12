@@ -1480,6 +1480,9 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
 .node.dimmed text   {{ opacity:.08; }}
 .node.selected circle {{ stroke-width:3px; filter:drop-shadow(0 0 8px currentColor); }}
 .node.highlighted circle {{ filter:drop-shadow(0 0 5px currentColor); }}
+.node.ghost circle {{ opacity:.32; stroke-dasharray:3,3; }}
+.node.ghost text   {{ opacity:.38; font-size:9px; }}
+.node.ghost        {{ cursor:default; }}
 
 /* ── Links ── */
 .link {{
@@ -1657,10 +1660,24 @@ function drawGraph(mode) {{
   const filterFile = document.getElementById('fileFilter').value;
 
   // Clone + filter
-  let nodes = raw.nodes.map(d => ({{...d}}));
+  const allNodes = raw.nodes.map(d => ({{...d}}));
+
+  let nodes, ghostIds;
   if (filterFile && mode === 'func') {{
-    nodes = nodes.filter(n => n.file === filterFile);
+    const primaryIds = new Set(allNodes.filter(n => n.file === filterFile).map(n => n.id));
+    ghostIds = new Set();
+    raw.links.forEach(l => {{
+      if (primaryIds.has(l.source) && !primaryIds.has(l.target)) ghostIds.add(l.target);
+      if (primaryIds.has(l.target) && !primaryIds.has(l.source)) ghostIds.add(l.source);
+    }});
+    nodes = allNodes
+      .filter(n => primaryIds.has(n.id) || ghostIds.has(n.id))
+      .map(n => ({{ ...n, _ghost: ghostIds.has(n.id) }}));
+  }} else {{
+    ghostIds = new Set();
+    nodes = allNodes;
   }}
+
   const nodeIds = new Set(nodes.map(n => n.id));
   let links = raw.links
     .filter(l => nodeIds.has(l.source) && nodeIds.has(l.target))
@@ -1672,8 +1689,11 @@ function drawGraph(mode) {{
   const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
   links = links.map(l => ({{ ...l, source: nodeById[l.source], target: nodeById[l.target] }}));
 
-  document.getElementById('statsLabel').textContent =
-    nodes.length + ' узлов · ' + links.length + ' рёбер';
+  const primaryCount = nodes.filter(n => !n._ghost).length;
+  const ghostCount   = nodes.filter(n =>  n._ghost).length;
+  document.getElementById('statsLabel').textContent = ghostCount > 0
+    ? primaryCount + ' узлов · ' + ghostCount + ' внешних · ' + links.length + ' рёбер'
+    : nodes.length + ' узлов · ' + links.length + ' рёбер';
 
   const W = document.getElementById('canvas').clientWidth;
   const H = document.getElementById('canvas').clientHeight;
@@ -1701,7 +1721,7 @@ function drawGraph(mode) {{
 
   // ── Node layer ─────────────────────────────────────────────────────────────
   nodeSel = rootG.append('g').selectAll('g.node').data(nodes).join('g')
-    .attr('class', d => 'node' + (d.is_async ? ' async-node' : ''))
+    .attr('class', d => 'node' + (d.is_async ? ' async-node' : '') + (d._ghost ? ' ghost' : ''))
     .call(d3.drag()
       .on('start', (e,d) => {{ if(!e.active) simulation.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; }})
       .on('drag',  (e,d) => {{ d.fx=e.x; d.fy=e.y; }})
@@ -1712,7 +1732,7 @@ function drawGraph(mode) {{
       }}))
     .on('mouseover', (e,d) => onHover(e,d))
     .on('mouseout',  ()    => onOut())
-    .on('click',     (e,d) => {{ e.stopPropagation(); onNodeClick(d, e); }});
+    .on('click',     (e,d) => {{ e.stopPropagation(); if (!d._ghost) onNodeClick(d, e); }});
 
   nodeSel.append('circle')
     .attr('r', d => rScale((d.n_calls||0) + (d.n_callers||0)))
@@ -1754,7 +1774,7 @@ function drawGraph(mode) {{
 
 // ── Hull drawing ─────────────────────────────────────────────────────────────
 function drawHulls(nodes) {{
-  const byFile = d3.group(nodes, d => d.file || '');
+  const byFile = d3.group(nodes.filter(n => !n._ghost), d => d.file || '');
   const hullData = [];
   byFile.forEach((fnodes, file) => {{
     if (!file || fnodes.length < 1) return;
@@ -1812,7 +1832,11 @@ function onHover(e, d) {{
   h += `<div class="tt-row">← вызывается: <span>${{edges.in.length}}</span></div>`;
   if (d.is_async)  h += `<div class="tt-row">⚡ <span>async</span></div>`;
   if (d.docstring)  h += `<div class="tt-doc">${{d.docstring}}</div>`;
-  h += `<div class="tt-row" style="margin-top:5px;color:var(--text3);font-size:10px">Клик — подробности</div>`;
+  if (d._ghost) {{
+    h += `<div class="tt-row" style="margin-top:5px;color:var(--text3);font-size:10px">🔗 внешний файл</div>`;
+  }} else {{
+    h += `<div class="tt-row" style="margin-top:5px;color:var(--text3);font-size:10px">Клик — подробности</div>`;
+  }}
   tt.innerHTML = h; tt.style.display = 'block';
   document.addEventListener('mousemove', moveTip);
   moveTip(e);
