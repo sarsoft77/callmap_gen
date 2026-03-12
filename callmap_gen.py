@@ -1420,6 +1420,8 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
 .p-fn:hover {{ text-decoration:underline; }}
 .p-file {{ font-size:10px; color:var(--text3); font-family:var(--mono); }}
 .p-empty {{ color:var(--text3); font-style:italic; font-size:11px; }}
+.p-deselect {{ margin-left:auto; color:var(--text3); cursor:pointer; font-size:11px; padding:0 2px; flex-shrink:0; }}
+.p-deselect:hover {{ color:var(--red); }}
 .p-doc  {{ font-size:11px; color:var(--text2); font-style:italic; padding:6px 0 2px; line-height:1.5; border-bottom:1px solid var(--border); margin-bottom:6px; }}
 .isolate-btn {{
   width:100%; margin-top:10px;
@@ -1568,7 +1570,7 @@ let svgSel, rootG;
 let linkSel, nodeSel, hullSel, hullLabelSel;
 let showHulls      = true;
 let isolatedNode   = null;
-let selectedNode   = null;
+let selectedNodes  = new Set();   // ids выбранных узлов (ctrl+click)
 let currentNodes   = [];
 let currentLinks   = [];
 let nodeEdges      = {{}};
@@ -1594,7 +1596,7 @@ document.addEventListener('DOMContentLoaded', () => {{
     .on('zoom', e => rootG.attr('transform', e.transform));
   svgSel.call(zoomBehavior)
     .on('dblclick.zoom', null)
-    .on('click', () => {{ if (selectedNode) {{ deselect(); }} }});
+    .on('click', (e) => {{ if (!e.ctrlKey && !e.metaKey) deselect(); }});
 
   // File filter dropdown
   const sel = document.getElementById('fileFilter');
@@ -1613,8 +1615,8 @@ document.addEventListener('DOMContentLoaded', () => {{
 function drawGraph(mode) {{
   rootG.selectAll('*').remove();
   if (simulation) simulation.stop();
-  isolatedNode = null;
-  selectedNode = null;
+  isolatedNode  = null;
+  selectedNodes = new Set();
   closePanel();
 
   const raw = mode === 'file' ? DATA.file_graph : DATA.func_graph;
@@ -1676,7 +1678,7 @@ function drawGraph(mode) {{
       }}))
     .on('mouseover', (e,d) => onHover(e,d))
     .on('mouseout',  ()    => onOut())
-    .on('click',     (e,d) => {{ e.stopPropagation(); onNodeClick(d); }});
+    .on('click',     (e,d) => {{ e.stopPropagation(); onNodeClick(d, e); }});
 
   nodeSel.append('circle')
     .attr('r', d => rScale((d.n_calls||0) + (d.n_callers||0)))
@@ -1764,7 +1766,7 @@ function drawHulls(nodes) {{
 
 // ── Hover ─────────────────────────────────────────────────────────────────────
 function onHover(e, d) {{
-  if (isolatedNode || selectedNode) return;
+  if (isolatedNode || selectedNodes.size > 0) return;
   highlightNode(d.id);
 
   const edges = nodeEdges[d.id] || {{ out: [], in: [] }};
@@ -1783,7 +1785,7 @@ function onHover(e, d) {{
 }}
 
 function onOut() {{
-  if (isolatedNode || selectedNode) return;
+  if (isolatedNode || selectedNodes.size > 0) return;
   unhighlight();
   document.getElementById('tooltip').style.display = 'none';
   document.removeEventListener('mousemove', moveTip);
@@ -1797,39 +1799,61 @@ function moveTip(e) {{
 }}
 
 // ── Node click → side panel ────────────────────────────────────────────────
-function onNodeClick(d) {{
+function onNodeClick(d, e) {{
   document.getElementById('tooltip').style.display = 'none';
   document.removeEventListener('mousemove', moveTip);
 
-  if (selectedNode && selectedNode.id === d.id) {{
-    deselect(); return;
-  }}
-  selectedNode = d;
+  const multi = e && (e.ctrlKey || e.metaKey);
 
-  nodeSel.classed('selected', n => n.id === d.id);
-  highlightNode(d.id);
+  if (multi) {{
+    // Ctrl+click: добавить/убрать из выбора
+    if (selectedNodes.has(d.id)) {{
+      selectedNodes.delete(d.id);
+    }} else {{
+      selectedNodes.add(d.id);
+    }}
+  }} else {{
+    // Обычный клик: выбрать только этот узел
+    if (selectedNodes.size === 1 && selectedNodes.has(d.id)) {{
+      deselect(); return;
+    }}
+    selectedNodes = new Set([d.id]);
+  }}
+
+  if (selectedNodes.size === 0) {{ deselect(); return; }}
+
+  nodeSel.classed('selected', n => selectedNodes.has(n.id));
+  highlightMulti(selectedNodes);
   openPanel(d);
 }}
 
 function deselect() {{
-  selectedNode = null;
+  selectedNodes = new Set();
   nodeSel.classed('selected', false);
   if (!isolatedNode) unhighlight();
   closePanel();
 }}
 
 function highlightNode(id) {{
-  const connectedIds = new Set([id]);
+  highlightMulti(new Set([id]));
+}}
+
+function highlightMulti(ids) {{
+  // Собираем всех соседей всех выбранных узлов
+  const connectedIds = new Set(ids);
   linkSel.each(l => {{
     const s = l.source.id||l.source, t = l.target.id||l.target;
-    if (s===id) connectedIds.add(t);
-    if (t===id) connectedIds.add(s);
+    if (ids.has(s)) connectedIds.add(t);
+    if (ids.has(t)) connectedIds.add(s);
   }});
   nodeSel.classed('dimmed',      n => !connectedIds.has(n.id));
-  nodeSel.classed('highlighted', n => connectedIds.has(n.id) && n.id !== id);
-  linkSel.classed('dimmed',       l => {{ const s=l.source.id||l.source, t=l.target.id||l.target; return s!==id&&t!==id; }});
-  linkSel.classed('highlight-out',l => {{ const s=l.source.id||l.source; return s===id; }});
-  linkSel.classed('highlight-in', l => {{ const t=l.target.id||l.target; return t===id; }});
+  nodeSel.classed('highlighted', n => connectedIds.has(n.id) && !ids.has(n.id));
+  linkSel.classed('dimmed',       l => {{
+    const s=l.source.id||l.source, t=l.target.id||l.target;
+    return !ids.has(s) && !ids.has(t);
+  }});
+  linkSel.classed('highlight-out',l => {{ const s=l.source.id||l.source; return ids.has(s); }});
+  linkSel.classed('highlight-in', l => {{ const t=l.target.id||l.target; return ids.has(t) && !ids.has(l.source.id||l.source); }});
 }}
 
 function unhighlight() {{
@@ -1841,43 +1865,100 @@ function unhighlight() {{
 function openPanel(d) {{
   const panel = document.getElementById('panel');
   panel.classList.remove('collapsed');
-  document.getElementById('panel-title').textContent = d.label + '()';
 
-  // Build callee/caller lists from pre-built edge index (same source as tooltip)
-  const edges   = nodeEdges[d.id] || {{ out: [], in: [] }};
-  const callees = edges.out.map(l => typeof l.target==='object' ? l.target : currentNodes.find(n=>n.id===l.target)).filter(Boolean);
-  const callers = edges.in.map(l  => typeof l.source==='object' ? l.source : currentNodes.find(n=>n.id===l.source)).filter(Boolean);
+  if (selectedNodes.size > 1) {{
+    // ── Мульти-режим: показываем все выбранные узлы ───────────────────────────
+    document.getElementById('panel-title').textContent = `${{selectedNodes.size}} функции выбраны`;
 
-  let html = `<div class="p-section">`;
-  html += `<div class="p-label">📄 Файл</div>`;
-  html += `<div class="p-meta"><span>${{d.file||'—'}}</span></div>`;
-  if (d.lineno) html += `<div class="p-meta">строка <span>${{d.lineno}}</span></div>`;
-  if (d.is_async)  html += `<div class="p-meta"><span>async</span></div>`;
-  if (d.docstring)  html += `<div class="p-doc">${{d.docstring}}</div>`;
-  html += `</div>`;
+    // Собираем объединённые callees/callers по всем выбранным
+    const allCallees = new Map();   // id → node (дедупликация)
+    const allCallers = new Map();
+    selectedNodes.forEach(sid => {{
+      const edges = nodeEdges[sid] || {{ out: [], in: [] }};
+      edges.out.forEach(l => {{
+        const t = typeof l.target==='object' ? l.target : currentNodes.find(n=>n.id===l.target);
+        if (t && !selectedNodes.has(t.id)) allCallees.set(t.id, t);
+      }});
+      edges.in.forEach(l => {{
+        const s = typeof l.source==='object' ? l.source : currentNodes.find(n=>n.id===l.source);
+        if (s && !selectedNodes.has(s.id)) allCallers.set(s.id, s);
+      }});
+    }});
 
-  html += `<div class="p-section"><div class="p-label">→ Вызывает (${{callees.length}})</div>`;
-  if (callees.length) {{
-    html += `<ul class="p-list">` + callees.map(n =>
-      `<li><a class="p-fn" onclick="focusNode('${{n.id}}')">${{n.label}}()</a><span class="p-file">${{n.file}}</span></li>`
-    ).join('') + `</ul>`;
-  }} else html += `<div class="p-empty">нет исходящих вызовов</div>`;
-  html += `</div>`;
+    let html = `<div class="p-section">`;
+    html += `<div class="p-label">Выбранные функции (${{selectedNodes.size}})</div>`;
+    html += `<ul class="p-list">`;
+    selectedNodes.forEach(sid => {{
+      const n = currentNodes.find(x => x.id === sid);
+      if (n) html += `<li>
+        <a class="p-fn" onclick="focusNode('${{n.id}}')">${{n.label}}()</a>
+        <span class="p-file">${{n.file}}</span>
+        <span class="p-deselect" onclick="deselectOne('${{n.id}}')" title="Убрать из выбора">✕</span>
+      </li>`;
+    }});
+    html += `</ul></div>`;
 
-  html += `<div class="p-section"><div class="p-label">← Вызывается из (${{callers.length}})</div>`;
-  if (callers.length) {{
-    html += `<ul class="p-list">` + callers.map(n =>
-      `<li><a class="p-fn" onclick="focusNode('${{n.id}}')">${{n.label}}()</a><span class="p-file">${{n.file}}</span></li>`
-    ).join('') + `</ul>`;
-  }} else html += `<div class="p-empty">нет входящих вызовов</div>`;
-  html += `</div>`;
+    const calleesArr = [...allCallees.values()];
+    const callersArr = [...allCallers.values()];
 
-  const isIsolated = isolatedNode && isolatedNode.id === d.id;
-  html += `<button class="isolate-btn${{isIsolated?' active':''}}" id="isolateBtn" onclick="toggleIsolate('${{d.id}}')">`
-        + (isIsolated ? '🔓 Показать всё' : '🔍 Изолировать функцию')
-        + `</button>`;
+    html += `<div class="p-section"><div class="p-label">→ Вызывают вместе (${{calleesArr.length}})</div>`;
+    if (calleesArr.length) {{
+      html += `<ul class="p-list">` + calleesArr.map(n =>
+        `<li><a class="p-fn" onclick="focusNode('${{n.id}}')">${{n.label}}()</a><span class="p-file">${{n.file}}</span></li>`
+      ).join('') + `</ul>`;
+    }} else html += `<div class="p-empty">нет общих исходящих</div>`;
+    html += `</div>`;
 
-  document.getElementById('panel-body').innerHTML = html;
+    html += `<div class="p-section"><div class="p-label">← Вызываются из (${{callersArr.length}})</div>`;
+    if (callersArr.length) {{
+      html += `<ul class="p-list">` + callersArr.map(n =>
+        `<li><a class="p-fn" onclick="focusNode('${{n.id}}')">${{n.label}}()</a><span class="p-file">${{n.file}}</span></li>`
+      ).join('') + `</ul>`;
+    }} else html += `<div class="p-empty">нет общих входящих</div>`;
+    html += `</div>`;
+
+    html += `<button class="isolate-btn" onclick="deselectAll()">✕ Сбросить выбор</button>`;
+    document.getElementById('panel-body').innerHTML = html;
+
+  }} else {{
+    // ── Одиночный выбор ───────────────────────────────────────────────────────
+    document.getElementById('panel-title').textContent = d.label + '()';
+
+    const edges   = nodeEdges[d.id] || {{ out: [], in: [] }};
+    const callees = edges.out.map(l => typeof l.target==='object' ? l.target : currentNodes.find(n=>n.id===l.target)).filter(Boolean);
+    const callers = edges.in.map(l  => typeof l.source==='object' ? l.source : currentNodes.find(n=>n.id===l.source)).filter(Boolean);
+
+    let html = `<div class="p-section">`;
+    html += `<div class="p-label">📄 Файл</div>`;
+    html += `<div class="p-meta"><span>${{d.file||'—'}}</span></div>`;
+    if (d.lineno)    html += `<div class="p-meta">строка <span>${{d.lineno}}</span></div>`;
+    if (d.is_async)  html += `<div class="p-meta"><span>async</span></div>`;
+    if (d.docstring) html += `<div class="p-doc">${{d.docstring}}</div>`;
+    html += `</div>`;
+
+    html += `<div class="p-section"><div class="p-label">→ Вызывает (${{callees.length}})</div>`;
+    if (callees.length) {{
+      html += `<ul class="p-list">` + callees.map(n =>
+        `<li><a class="p-fn" onclick="focusNode('${{n.id}}')">${{n.label}}()</a><span class="p-file">${{n.file}}</span></li>`
+      ).join('') + `</ul>`;
+    }} else html += `<div class="p-empty">нет исходящих вызовов</div>`;
+    html += `</div>`;
+
+    html += `<div class="p-section"><div class="p-label">← Вызывается из (${{callers.length}})</div>`;
+    if (callers.length) {{
+      html += `<ul class="p-list">` + callers.map(n =>
+        `<li><a class="p-fn" onclick="focusNode('${{n.id}}')">${{n.label}}()</a><span class="p-file">${{n.file}}</span></li>`
+      ).join('') + `</ul>`;
+    }} else html += `<div class="p-empty">нет входящих вызовов</div>`;
+    html += `</div>`;
+
+    const isIsolated = isolatedNode && isolatedNode.id === d.id;
+    html += `<button class="isolate-btn${{isIsolated?' active':''}}" id="isolateBtn" onclick="toggleIsolate('${{d.id}}')">`
+          + (isIsolated ? '🔓 Показать всё' : '🔍 Изолировать функцию')
+          + `</button>`;
+
+    document.getElementById('panel-body').innerHTML = html;
+  }}
 }}
 
 function closePanel() {{
@@ -1885,10 +1966,25 @@ function closePanel() {{
 }}
 
 // ── Focus / Isolate ─────────────────────────────────────────────────────────
+function deselectOne(id) {{
+  selectedNodes.delete(id);
+  if (selectedNodes.size === 0) {{ deselect(); return; }}
+  nodeSel.classed('selected', n => selectedNodes.has(n.id));
+  highlightMulti(selectedNodes);
+  // Переоткрыть панель с последним выбранным
+  const lastId = [...selectedNodes].at(-1);
+  const last = currentNodes.find(n => n.id === lastId);
+  if (last) openPanel(last);
+}}
+
+function deselectAll() {{
+  deselect();
+}}
+
 function focusNode(id) {{
   const d = currentNodes.find(n => n.id === id);
   if (!d) return;
-  selectedNode = d;
+  selectedNodes = new Set([id]);
   nodeSel.classed('selected', n => n.id === id);
   highlightNode(id);
   openPanel(d);
