@@ -515,6 +515,19 @@ def build_callers_index(files: list[FileInfo], module_index: dict[str, str]) -> 
                     ))
 
 
+def orphan_files(files: list[FileInfo]) -> list[FileInfo]:
+    """Файлы, ни одна процедура которых не вызывается из другого файла проекта."""
+    result = []
+    for f in files:
+        has_external_caller = any(
+            any(c.rel_path != f.rel_path for c in proc.callers)
+            for proc in f.procedures
+        )
+        if not has_external_caller:
+            result.append(f)
+    return result
+
+
 def resolve_module_to_file(module: str, module_index: dict[str, str]) -> Optional[str]:
     """Попробовать найти файл по имени модуля или его суффиксу."""
     if module in module_index:
@@ -548,6 +561,18 @@ def render_markdown(files: list[FileInfo], module_index: dict[str, str], project
     lines.append("")
 
     lines.append("---\n")
+
+    # ── Модули-сироты ──────────────────────────────────────────────────────────
+    orphans = orphan_files(files)
+    if orphans:
+        lines.append("## ⚠️ Модули без входящих вызовов\n")
+        lines.append("> Файлы, ни одна функция которых не вызывается из других модулей проекта.\n")
+        for f in orphans:
+            anchor = _anchor(f"file-{f.rel_path}")
+            n_procs = len(f.procedures)
+            lines.append(f"- [`{f.rel_path}`](#{anchor}) — {n_procs} процедур")
+        lines.append("")
+        lines.append("---\n")
 
     # Тело
     for f in files:
@@ -804,7 +829,46 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
         )
 
     sidebar_html = "\n".join(sidebar_items)
-    content_html = "\n".join(content_blocks)
+
+    # ── Виджет «Модули без входящих вызовов» ──────────────────────────────────
+    orphans = orphan_files(files)
+    if orphans:
+        rows = []
+        for f in orphans:
+            fid = f"file-{f.rel_path.replace(os.sep, '-').replace('.', '-')}"
+            n = len(f.procedures)
+            n_calls_out = sum(len(p.calls) for p in f.procedures)
+            rows.append(
+                f'<tr class="orp-row" onclick="location.hash=\'#{fid}\';" style="cursor:pointer">' +
+                f'<td class="orp-file"><a href="#{fid}" onclick="event.stopPropagation()">{_he(f.rel_path)}</a></td>' +
+                f'<td class="orp-n">{n}</td>' +
+                f'<td class="orp-n">{n_calls_out}</td>' +
+                f'</tr>'
+            )
+        orphan_widget = (
+            '<section class="orp-section" id="orphan-modules">' +
+            '<div class="orp-header">' +
+            '  <span class="orp-icon">⚠️</span>' +
+            f'  <h2 class="orp-title">Модули без входящих вызовов</h2>' +
+            f'  <span class="orp-badge">{len(orphans)}</span>' +
+            '</div>' +
+            '<p class="orp-desc">Ни одна функция этих файлов не вызывается из других модулей проекта. ' +
+            'Возможно, это точки входа, устаревший код или изолированные утилиты.</p>' +
+            '<table class="orp-table">' +
+            '<thead><tr><th>Файл</th><th title="Процедур">Проц.</th><th title="Исходящих вызовов">Вызовов</th></tr></thead>' +
+            f'<tbody>{"".join(rows)}</tbody>' +
+            '</table></section>'
+        )
+    else:
+        orphan_widget = ""
+
+    content_html = orphan_widget + ("\n" if orphan_widget else "") + "\n".join(content_blocks)
+
+    orphan_sidebar_link = (
+        '<a class="sidebar-orphan-link" href="#orphan-modules">' +
+        f'⚠️ Модули-сироты <span class="sidebar-count">{len(orphans)}</span></a>'
+        if orphans else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -956,12 +1020,63 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
   .sidebar-proc:hover {{ background: var(--bg3); color: var(--text2); }}
   .sidebar-proc.active {{ color: var(--accent); border-left-color: var(--accent); background: var(--bg3); }}
   .sidebar-icon {{ flex-shrink: 0; font-size: 11px; }}
+  .sidebar-orphan-link {{
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px; margin-bottom: 4px;
+    color: var(--yellow); font-size: 12px; text-decoration: none;
+    background: rgba(210,153,34,.07);
+    border-left: 2px solid var(--yellow);
+    transition: background .1s;
+  }}
+  .sidebar-orphan-link:hover {{ background: rgba(210,153,34,.14); }}
   .sidebar-gen {{
     padding: 8px 14px;
     font-size: 10px;
     color: var(--text3);
     border-top: 1px solid var(--border);
   }}
+
+  /* ── Orphan modules widget ── */
+  .orp-section {{
+    background: var(--bg2);
+    border: 1px solid var(--yellow);
+    border-left: 4px solid var(--yellow);
+    border-radius: var(--radius);
+    padding: 18px 22px 14px;
+    margin-bottom: 28px;
+  }}
+  .orp-header {{
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  }}
+  .orp-title {{
+    font-size: 15px; font-weight: 700; color: var(--yellow); flex: 1; margin: 0;
+  }}
+  .orp-badge {{
+    background: rgba(210,153,34,.15); color: var(--yellow);
+    border: 1px solid rgba(210,153,34,.4);
+    border-radius: 10px; padding: 1px 9px; font-size: 12px; font-weight: 600;
+  }}
+  .orp-desc {{
+    font-size: 12px; color: var(--text2); margin: 0 0 12px; line-height: 1.5;
+  }}
+  .orp-table {{
+    width: 100%; border-collapse: collapse; font-size: 12px;
+  }}
+  .orp-table th {{
+    text-align: left; padding: 5px 10px 5px 0;
+    border-bottom: 1px solid var(--border2);
+    color: var(--text3); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .5px; font-weight: 600;
+  }}
+  .orp-table td {{ padding: 5px 10px 5px 0; border-bottom: 1px solid var(--border); }}
+  .orp-row:last-child td {{ border-bottom: none; }}
+  .orp-row:hover {{ background: var(--bg3); }}
+  .orp-file a {{
+    color: var(--accent); text-decoration: none;
+    font-family: var(--font-mono); font-size: 12px;
+  }}
+  .orp-file a:hover {{ text-decoration: underline; }}
+  .orp-n {{ color: var(--text3); font-family: var(--font-mono); text-align: right; padding-right: 20px; }}
 
   /* ── Main content ── */
   #main {{
@@ -1279,7 +1394,7 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
     <input type="text" id="sidebarSearch" placeholder="🔍 Файл или процедура..." autocomplete="off">
   </div>
   <div class="sidebar-files" id="sidebarFiles">
-    {sidebar_html}
+    {orphan_sidebar_link}{sidebar_html}
   </div>
   <div class="sidebar-gen">Сгенерировано {generated_at}</div>
 </nav>
