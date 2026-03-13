@@ -2026,49 +2026,77 @@ function drawGraph(mode) {{
   }});
 
   // ── Simulation ─────────────────────────────────────────────────────────────
-  // При фильтре файла: ghost-узлы должны находиться снаружи оболочки primary-кластера.
-  // Кастомная сила: ghost притягиваются к точкам на окружности вокруг centroid primary,
-  // а primary отталкиваются от ghost чтобы не смешиваться.
-  const ghostRepelForce = (filterFile && mode === 'func') ? (alpha) => {{
-    const primary = nodes.filter(n => !n._ghost);
-    const ghosts  = nodes.filter(n =>  n._ghost);
-    if (!primary.length || !ghosts.length) return;
-    const cx = d3.mean(primary, n => n.x);
-    const cy = d3.mean(primary, n => n.y);
-    // Радиус внешнего кольца ghost-узлов — динамически по разбросу primary
-    const maxR = Math.max(60, d3.max(primary, n => Math.sqrt((n.x-cx)**2+(n.y-cy)**2)) || 60);
-    const ghostR = maxR + 120;
-    ghosts.forEach((n, i) => {{
-      const angle = (2 * Math.PI * i) / ghosts.length;
-      // Целевая точка: на окружности ghostR вокруг centroid
-      const tx = cx + ghostR * Math.cos(angle);
-      const ty = cy + ghostR * Math.sin(angle);
-      // Плавное притяжение к целевой точке
-      n.vx += (tx - n.x) * alpha * 0.08;
-      n.vy += (ty - n.y) * alpha * 0.08;
-      // Сильное отталкивание ghost от каждого primary-узла
-      primary.forEach(p => {{
-        const dx = n.x - p.x, dy = n.y - p.y;
-        const d2 = dx*dx + dy*dy || 1;
-        const minDist = 90;
-        if (d2 < minDist*minDist) {{
-          const f = (minDist*minDist - d2) / d2 * alpha * 0.5;
-          n.vx += dx * f;
-          n.vy += dy * f;
-        }}
-      }});
-    }});
-  }} : null;
+  // Разделяем ghost и primary для жёсткого клампинга в ticked()
+  const _primaryNodes = (filterFile && mode === 'func') ? nodes.filter(n => !n._ghost) : [];
+  const _ghostNodes   = (filterFile && mode === 'func') ? nodes.filter(n =>  n._ghost) : [];
+
+  // Вычислить радиус hull в направлении угла theta:
+  // hull — массив точек полигона; возвращает расстояние от centroid до границы.
+  function hullRadiusAt(hull, cx, cy, theta) {{
+    if (!hull || hull.length < 2) return 60;
+    const cos = Math.cos(theta), sin = Math.sin(theta);
+    let minT = Infinity;
+    for (let i = 0; i < hull.length; i++) {{
+      const [x1, y1] = hull[i];
+      const [x2, y2] = hull[(i+1) % hull.length];
+      const ex = x2-x1, ey = y2-y1;
+      const denom = cos*ey - sin*ex;
+      if (Math.abs(denom) < 1e-9) continue;
+      const t = ((x1-cx)*ey - (y1-cy)*ex) / denom;
+      const u = ((x1-cx)*sin - (y1-cy)*cos) / denom;  // recheck sign
+      if (t > 0 && u >= 0 && u <= 1) minT = Math.min(minT, t);
+    }}
+    return isFinite(minT) ? minT : 60;
+  }}
 
   simulation = d3.forceSimulation(nodes)
     .force('link',    d3.forceLink(links).id(d=>d.id).distance(mode==='file'?140:80).strength(0.5))
     .force('charge',  d3.forceManyBody().strength(mode==='file'?-600:-180))
     .force('center',  d3.forceCenter(W/2, H/2))
     .force('collide', d3.forceCollide().radius(d => rScale((d.n_calls||0)+(d.n_callers||0))+8))
-    .force('ghostRepel', ghostRepelForce)
     .on('tick', ticked);
 
   function ticked() {{
+    // ── Жёсткий клампинг ghost за пределы hull ───────────────────────────────
+    // На каждом тике: если ghost оказался внутри hull + margin — выталкиваем.
+    // margin=28 совпадает с hull pad в drawHulls, поэтому ghost прижимаются
+    // вплотную к видимой оболочке, но не залезают за неё.
+    if (_ghostNodes.length && _primaryNodes.length) {{
+      const cx = d3.mean(_primaryNodes, n => n.x);
+      const cy = d3.mean(_primaryNodes, n => n.y);
+      const pts = _primaryNodes.map(n => [n.x, n.y]);
+      const convex = pts.length >= 3 ? d3.polygonHull(pts) : null;
+      const margin = 32;  // отступ от края hull до ghost
+
+      _ghostNodes.forEach(n => {{
+        const dx = n.x - cx, dy = n.y - cy;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        const theta = Math.atan2(dy, dx);
+
+        // Радиус hull в направлении этого ghost + margin
+        let hullR;
+        if (convex) {{
+          // Расширяем hull точно так же как в drawHulls (pad=28)
+          const expandedHull = convex.map(([x,y]) => {{
+            const ex=x-cx, ey=y-cy, ed=Math.sqrt(ex*ex+ey*ey)||1;
+            return [cx+ex/ed*(ed+28), cy+ey/ed*(ed+28)];
+          }});
+          hullR = hullRadiusAt(expandedHull, cx, cy, theta) + margin;
+        }} else {{
+          // Мало точек — используем maxR
+          hullR = Math.max(40, d3.max(_primaryNodes, p => Math.sqrt((p.x-cx)**2+(p.y-cy)**2)) || 40) + 28 + margin;
+        }}
+
+        if (dist < hullR) {{
+          const scale = hullR / dist;
+          n.x = cx + dx * scale;
+          n.y = cy + dy * scale;
+          const dot = n.vx*(dx/dist) + n.vy*(dy/dist);
+          if (dot < 0) {{ n.vx -= dot*(dx/dist); n.vy -= dot*(dy/dist); }}
+        }}
+      }});
+    }}
+
     linkSel
       .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
       .attr('x2', d => edgeEnd(d.source, d.target, rScale((d.target.n_calls||0)+(d.target.n_callers||0))).x)
