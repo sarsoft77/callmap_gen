@@ -2026,11 +2026,46 @@ function drawGraph(mode) {{
   }});
 
   // ── Simulation ─────────────────────────────────────────────────────────────
+  // При фильтре файла: ghost-узлы должны находиться снаружи оболочки primary-кластера.
+  // Кастомная сила: ghost притягиваются к точкам на окружности вокруг centroid primary,
+  // а primary отталкиваются от ghost чтобы не смешиваться.
+  const ghostRepelForce = (filterFile && mode === 'func') ? (alpha) => {{
+    const primary = nodes.filter(n => !n._ghost);
+    const ghosts  = nodes.filter(n =>  n._ghost);
+    if (!primary.length || !ghosts.length) return;
+    const cx = d3.mean(primary, n => n.x);
+    const cy = d3.mean(primary, n => n.y);
+    // Радиус внешнего кольца ghost-узлов — динамически по разбросу primary
+    const maxR = Math.max(60, d3.max(primary, n => Math.sqrt((n.x-cx)**2+(n.y-cy)**2)) || 60);
+    const ghostR = maxR + 120;
+    ghosts.forEach((n, i) => {{
+      const angle = (2 * Math.PI * i) / ghosts.length;
+      // Целевая точка: на окружности ghostR вокруг centroid
+      const tx = cx + ghostR * Math.cos(angle);
+      const ty = cy + ghostR * Math.sin(angle);
+      // Плавное притяжение к целевой точке
+      n.vx += (tx - n.x) * alpha * 0.08;
+      n.vy += (ty - n.y) * alpha * 0.08;
+      // Сильное отталкивание ghost от каждого primary-узла
+      primary.forEach(p => {{
+        const dx = n.x - p.x, dy = n.y - p.y;
+        const d2 = dx*dx + dy*dy || 1;
+        const minDist = 90;
+        if (d2 < minDist*minDist) {{
+          const f = (minDist*minDist - d2) / d2 * alpha * 0.5;
+          n.vx += dx * f;
+          n.vy += dy * f;
+        }}
+      }});
+    }});
+  }} : null;
+
   simulation = d3.forceSimulation(nodes)
     .force('link',    d3.forceLink(links).id(d=>d.id).distance(mode==='file'?140:80).strength(0.5))
     .force('charge',  d3.forceManyBody().strength(mode==='file'?-600:-180))
     .force('center',  d3.forceCenter(W/2, H/2))
     .force('collide', d3.forceCollide().radius(d => rScale((d.n_calls||0)+(d.n_callers||0))+8))
+    .force('ghostRepel', ghostRepelForce)
     .on('tick', ticked);
 
   function ticked() {{
