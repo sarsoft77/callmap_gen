@@ -289,14 +289,29 @@ def _add_callback(cb_name, lineno, imports, calls, seen):
         calls.append(cb_info)
 
 
+def _walk_no_inner_funcs(nodes):
+    """Обходит дерево операторов, пропуская вложенные FunctionDef/AsyncFunctionDef целиком.
+    Вызовы из closure приписываются только самой closure, а не родительской функции.
+    """
+    queue = list(nodes)
+    while queue:
+        node = queue.pop()
+        # Вложенные функции пропускаем полностью — не yield и не recurse
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        yield node
+        for child in ast.iter_child_nodes(node):
+            queue.append(child)
+
+
 def extract_calls(body_nodes: list[ast.stmt], imports: dict[str, str]) -> list[CallInfo]:
-    """Обойти тело функции и собрать все вызовы."""
+    """Обойти тело функции и собрать все вызовы (не заходя в тела вложенных функций)."""
     calls: list[CallInfo] = []
     seen: set[tuple] = set()
     cb_calls: list[CallInfo] = []   # callback-связи (не фильтруются шумом)
     cb_seen: set[tuple] = set()
 
-    for node in ast.walk(ast.Module(body=body_nodes, type_ignores=[])):
+    for node in _walk_no_inner_funcs(body_nodes):
         if not isinstance(node, ast.Call):
             continue
 
@@ -644,11 +659,19 @@ def render_markdown(files: list[FileInfo], module_index: dict[str, str], project
             # Callers
             if proc.callers:
                 lines.append("**Вызывается из:**")
-                for caller in sorted(proc.callers, key=lambda c: (c.rel_path, c.lineno)):
+                from collections import Counter
+                ln_count: dict = Counter((c.rel_path, c.lineno) for c in proc.callers)
+                ln_shown: set = set()
+                for caller in sorted(proc.callers, key=lambda c: (c.rel_path, c.lineno, c.qualname)):
                     caller_anchor = _anchor(f"file-{caller.rel_path}")
+                    key = (caller.rel_path, caller.lineno)
+                    show_ln = key not in ln_shown
+                    if ln_count[key] > 1:
+                        ln_shown.add(key)
+                    lineno_str = f" *(строка {caller.lineno})*" if show_ln else ""
                     lines.append(
                         f"- [`{caller.qualname}()`](#{caller_anchor})"
-                        f" — `{caller.rel_path}` *(строка {caller.lineno})*"
+                        f" — `{caller.rel_path}`{lineno_str}"
                     )
                 lines.append("")
 
@@ -785,14 +808,25 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
             # Callers HTML
             if proc.callers:
                 caller_items = ""
-                for c in sorted(proc.callers, key=lambda c: (c.rel_path, c.lineno)):
+                # Считаем сколько раз встречается каждый (rel_path, lineno) —
+                # если несколько caller'ов из одного места (напр. render + вложенная),
+                # показываем lineno только у первого чтобы избежать дубликатов.
+                from collections import Counter
+                lineno_count: dict = Counter((c.rel_path, c.lineno) for c in proc.callers)
+                lineno_shown: set = set()
+                for c in sorted(proc.callers, key=lambda c: (c.rel_path, c.lineno, c.qualname)):
                     cfid = f"file-{c.rel_path.replace(os.sep, '-').replace('.', '-')}"
                     cpid = f"{cfid}-{c.qualname.replace('.', '-').replace('<', '').replace('>', '')}"
+                    key = (c.rel_path, c.lineno)
+                    show_lineno = key not in lineno_shown
+                    if lineno_count[key] > 1:
+                        lineno_shown.add(key)
+                    lineno_html = f'<span class="lineno">:{c.lineno}</span>' if show_lineno else ''
                     caller_items += (
                         f'<li>'
                         f'<a class="caller-link" href="#{cpid}"><code>{_he(c.qualname)}()</code></a>'
                         f'<span class="caller-file">{_he(c.rel_path)}</span>'
-                        f'<span class="lineno">:{c.lineno}</span>'
+                        f'{lineno_html}'
                         f'</li>'
                     )
                 callers_html = (
