@@ -89,8 +89,27 @@ _NOISE_METHODS = {
     "resolve", "exists", "is_dir", "is_file", "mkdir", "rglob", "read_text",
     "write_text", "relative_to", "parent", "parts", "stem", "suffix",
     "splitlines", "removesuffix", "removeprefix",
-    "on_click", "classes", "style", "props",   # NiceGUI UI-шум
-    "clear", "disable", "enable",
+    "classes", "style", "props",               # NiceGUI UI-шум
+    "disable", "enable",
+}
+
+# Методы регистрации обработчиков событий.
+# obj.on_click(handler), obj.on("event", handler), obj.connect("sig", handler) и т.д.
+# Аргумент-функция из этих вызовов трактуется как вызов (логическая связь).
+_EVENT_METHODS = {
+    # NiceGUI / общие
+    "on_click", "on_change", "on_keydown", "on_keyup", "on_keypress",
+    "on_press", "on_release", "on_submit", "on_select", "on_blur", "on_focus",
+    "on_upload", "on_value_change", "on_close", "on_open", "on_confirm",
+    "on_cancel", "on_delete", "on_rename", "on_move", "on_drop", "on_resize",
+    # Общие паттерны
+    "on", "connect", "bind", "subscribe", "listen", "register",
+    "add_listener", "add_handler", "set_callback", "set_handler",
+    # asyncio / threading
+    "add_done_callback",
+    # Таймеры (callback передаётся как аргумент)
+    "timer", "call_later", "call_soon", "call_at",
+    "after", "schedule", "set_interval", "set_timeout",
 }
 
 # Модули стандартной библиотеки и популярных lib — их вызовы менее интересны
@@ -101,6 +120,18 @@ _STDLIB_MODULES = {
     "collections", "itertools", "functools", "contextlib", "dataclasses",
     "typing", "abc", "enum", "struct", "traceback", "inspect",
     "requests", "sqlite3", "csv", "ast", "argparse", "shutil", "glob",
+}
+
+# Методы-исполнители: первый аргумент — callable, остальные — его параметры.
+# run.io_bound(fn, a, b) → fn является вызовом.
+_EXECUTOR_METHODS = {
+    "io_bound", "cpu_bound",                      # nicegui.run
+    "create_task", "ensure_future",               # asyncio
+    "run_coroutine_threadsafe", "run_in_executor",
+    "submit", "map",                              # concurrent.futures / multiprocessing
+    "apply", "apply_async", "starmap", "starmap_async",
+    "spawn", "dispatch", "defer", "delay",        # общие паттерны
+    "enqueue", "schedule_call",
 }
 
 # Пользовательский список исключённых библиотек/модулей.
@@ -238,21 +269,69 @@ def _resolve_call(node: ast.Call, imports: dict[str, str]) -> Optional[CallInfo]
     return None
 
 
+def _add_callback(cb_name, lineno, imports, calls, seen):
+    """Добавить функцию-callback как вызов."""
+    if cb_name in _BUILTINS:
+        return
+    if cb_name in imports:
+        full = imports[cb_name]
+        parts = full.rsplit(".", 1)
+        cb_mod = parts[0] if len(parts) == 2 else ""
+        cb_fn  = parts[1] if len(parts) == 2 else full
+    else:
+        cb_mod = ""
+        cb_fn  = cb_name
+    cb_info = CallInfo(callee=f"{cb_name}()", callee_module=cb_mod,
+                       callee_func=cb_fn, lineno=lineno)
+    key = (cb_info.callee, cb_info.lineno)
+    if key not in seen:
+        seen.add(key)
+        calls.append(cb_info)
+
+
 def extract_calls(body_nodes: list[ast.stmt], imports: dict[str, str]) -> list[CallInfo]:
     """Обойти тело функции и собрать все вызовы."""
     calls: list[CallInfo] = []
     seen: set[tuple] = set()
+    cb_calls: list[CallInfo] = []   # callback-связи (не фильтруются шумом)
+    cb_seen: set[tuple] = set()
 
     for node in ast.walk(ast.Module(body=body_nodes, type_ignores=[])):
-        if isinstance(node, ast.Call):
-            info = _resolve_call(node, imports)
-            if info:
-                key = (info.callee, info.lineno)
-                if key not in seen:
-                    seen.add(key)
-                    calls.append(info)
+        if not isinstance(node, ast.Call):
+            continue
 
+        # ── Обычный вызов ──────────────────────────────────────────────────────
+        info = _resolve_call(node, imports)
+        if info:
+            key = (info.callee, info.lineno)
+            if key not in seen:
+                seen.add(key)
+                calls.append(info)
+
+        # ── Паттерн регистрации обработчика: obj.on_click(handler) ─────────────
+        # Любой аргумент-Name из _EVENT_METHODS является callback.
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _EVENT_METHODS:
+            for arg in list(node.args) + [kw.value for kw in node.keywords]:
+                if isinstance(arg, ast.Name) and arg.id not in _BUILTINS:
+                    _add_callback(arg.id, node.lineno, imports, cb_calls, cb_seen)
+
+        # ── Паттерн executor: run.io_bound(fn, arg1, arg2) ──────────────────
+        # Первый аргумент — callable, остальные — его параметры.
+        # Добавляем в cb_calls независимо от _is_noise на самом вызове.
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _EXECUTOR_METHODS:
+            if node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Name):
+                    _add_callback(first.id, node.lineno, imports, cb_calls, cb_seen)
+                elif isinstance(first, ast.Call) and isinstance(first.func, ast.Name):
+                    _add_callback(first.func.id, node.lineno, imports, cb_calls, cb_seen)
+
+    # Шумовой фильтр только для обычных вызовов; callback-связи всегда валидны
     calls = [c for c in calls if not _is_noise(c)]
+    normal_keys = {(c.callee, c.lineno) for c in calls}
+    for c in cb_calls:
+        if (c.callee, c.lineno) not in normal_keys:
+            calls.append(c)
     return sorted(calls, key=lambda c: c.lineno)
 
 
