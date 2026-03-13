@@ -571,9 +571,26 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
     sidebar_items: list[str] = []
     for f in files:
         fid = f"file-{f.rel_path.replace(os.sep, '-').replace('.', '-')}"
+        procs_sorted = sorted(f.procedures, key=lambda p: p.lineno)
+        # Список процедур внутри details
+        proc_links = ""
+        for proc in procs_sorted:
+            pid = f"{fid}-{proc.qualname.replace('.', '-').replace('<', '').replace('>', '')}"
+            prefix = "async " if proc.is_async else ""
+            proc_links += (
+                f'<a class="sidebar-proc" href="#{pid}" '
+                f'title="{_he(prefix + proc.qualname + "()")}">'
+                f'{_he(proc.qualname)}()</a>'
+            )
         sidebar_items.append(
-            f'<a class="sidebar-file" href="#{fid}" title="{_he(f.rel_path)}">'
-            f'<span class="sidebar-icon">📄</span>{_he(f.rel_path)}</a>'
+            f'<details class="sidebar-group" data-fid="{fid}">'
+            f'<summary class="sidebar-file" title="{_he(f.rel_path)}">'
+            f'<span class="sidebar-icon">📄</span>'
+            f'<span class="sidebar-fname">{_he(f.rel_path)}</span>'
+            f'<span class="sidebar-count">{len(procs_sorted)}</span>'
+            f'</summary>'
+            f'<div class="sidebar-procs">{proc_links}</div>'
+            f'</details>'
         )
 
     # ── Main content ───────────────────────────────────────────────────────────
@@ -803,22 +820,62 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
     flex: 1;
     overflow-y: auto;
   }}
+  .sidebar-group {{
+    border-left: 2px solid transparent;
+    transition: border-color 0.1s;
+  }}
+  .sidebar-group.active-group {{ border-left-color: var(--accent); }}
+  .sidebar-group[open] > summary .sidebar-icon {{ content: ""; }}
   .sidebar-file {{
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 14px;
+    padding: 5px 10px 5px 12px;
     color: var(--text2);
-    text-decoration: none;
     font-size: 12px;
+    cursor: pointer;
+    list-style: none;
+    transition: background 0.1s, color 0.1s;
+    user-select: none;
+  }}
+  .sidebar-file::-webkit-details-marker {{ display: none; }}
+  .sidebar-file:hover {{ background: var(--bg3); color: var(--text); }}
+  .sidebar-group[open] > .sidebar-file {{ color: var(--text); }}
+  .sidebar-group.active-group > .sidebar-file {{ color: var(--accent); }}
+  .sidebar-fname {{
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }}
+  .sidebar-count {{
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--text3);
+    background: var(--bg3);
+    border-radius: 8px;
+    padding: 1px 5px;
+    margin-left: auto;
+  }}
+  .sidebar-procs {{
+    padding: 2px 0 4px 0;
+  }}
+  .sidebar-proc {{
+    display: block;
+    padding: 3px 10px 3px 28px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text3);
+    text-decoration: none;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    transition: background 0.1s, color 0.1s;
     border-left: 2px solid transparent;
+    transition: background 0.1s, color 0.1s;
+    margin-left: 12px;
   }}
-  .sidebar-file:hover {{ background: var(--bg3); color: var(--text); border-left-color: var(--border2); }}
-  .sidebar-file.active {{ background: var(--bg3); color: var(--accent); border-left-color: var(--accent); }}
+  .sidebar-proc:hover {{ background: var(--bg3); color: var(--text2); }}
+  .sidebar-proc.active {{ color: var(--accent); border-left-color: var(--accent); background: var(--bg3); }}
   .sidebar-icon {{ flex-shrink: 0; font-size: 11px; }}
   .sidebar-gen {{
     padding: 8px 14px;
@@ -1140,7 +1197,7 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
     <div class="sidebar-meta">{len(files)} файлов · {total_procs} процедур · {total_calls} вызовов</div>
   </div>
   <div class="sidebar-search">
-    <input type="text" id="sidebarSearch" placeholder="🔍 Поиск файла..." autocomplete="off">
+    <input type="text" id="sidebarSearch" placeholder="🔍 Файл или процедура..." autocomplete="off">
   </div>
   <div class="sidebar-files" id="sidebarFiles">
     {sidebar_html}
@@ -1169,8 +1226,18 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
   const sidebarSearch = document.getElementById('sidebarSearch');
   sidebarSearch.addEventListener('input', () => {{
     const q = sidebarSearch.value.toLowerCase().trim();
-    document.querySelectorAll('.sidebar-file').forEach(el => {{
-      el.classList.toggle('hidden', q && !el.textContent.toLowerCase().includes(q));
+    document.querySelectorAll('.sidebar-group').forEach(group => {{
+      const fileName = group.querySelector('.sidebar-fname')?.textContent.toLowerCase() || '';
+      let anyProcMatch = false;
+      group.querySelectorAll('.sidebar-proc').forEach(proc => {{
+        const match = !q || proc.textContent.toLowerCase().includes(q) || fileName.includes(q);
+        proc.classList.toggle('hidden', !match);
+        if (match) anyProcMatch = true;
+      }});
+      const groupMatch = !q || fileName.includes(q) || anyProcMatch;
+      group.classList.toggle('hidden', !groupMatch);
+      // Раскрыть группу если нашли процедуру
+      if (q && anyProcMatch && !fileName.includes(q)) group.open = true;
     }});
   }});
 
@@ -1190,24 +1257,34 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
     }});
   }});
 
-  // ── Active sidebar link on scroll ─────────────────────────────────────────
-  const sections = document.querySelectorAll('.file-section');
-  const sidebarLinks = document.querySelectorAll('.sidebar-file');
-
+  // ── Active sidebar on scroll ──────────────────────────────────────────────
   const observer = new IntersectionObserver(entries => {{
     entries.forEach(entry => {{
-      if (entry.isIntersecting) {{
-        const id = entry.target.id;
-        sidebarLinks.forEach(link => {{
-          const active = link.getAttribute('href') === '#' + id;
-          link.classList.toggle('active', active);
-          if (active) link.scrollIntoView({{ block: 'nearest' }});
-        }});
-      }}
-    }});
-  }}, {{ rootMargin: '-10% 0px -80% 0px', threshold: 0 }});
+      if (!entry.isIntersecting) return;
+      const id = entry.target.id;
 
-  sections.forEach(s => observer.observe(s));
+      // Подсветка файловой группы
+      document.querySelectorAll('.sidebar-group').forEach(g => {{
+        const active = g.dataset.fid === id;
+        g.classList.toggle('active-group', active);
+        if (active) {{
+          g.open = true;
+          g.scrollIntoView({{ block: 'nearest' }});
+        }}
+      }});
+
+      // Подсветка процедуры
+      document.querySelectorAll('.sidebar-proc').forEach(link => {{
+        const href = link.getAttribute('href');
+        const active = href && href.slice(1).startsWith(id + '-') || href === '#' + id;
+        link.classList.toggle('active', active);
+        if (active) link.scrollIntoView({{ block: 'nearest' }});
+      }});
+    }});
+  }}, {{ rootMargin: '-5% 0px -75% 0px', threshold: 0 }});
+
+  document.querySelectorAll('.file-section').forEach(s => observer.observe(s));
+  document.querySelectorAll('.proc-card').forEach(s => observer.observe(s));
 
   // ── Collapse/expand proc body on header click ──────────────────────────────
   document.querySelectorAll('.proc-header').forEach(header => {{
