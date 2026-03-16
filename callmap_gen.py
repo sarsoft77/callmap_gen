@@ -1718,14 +1718,18 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
 
 /* ── Tuning ── */
 #tuning {{
-  display:flex; align-items:center; gap:10px; margin-left:14px;
-  padding:4px 8px; background:var(--bg3); border:1px solid var(--border);
-  border-radius:8px; font-size:11px; color:var(--text3);
+  width:220px; min-width:220px;
+  background:var(--bg2);
+  border-left:1px solid var(--border);
+  border-right:1px solid var(--border);
+  padding:10px;
+  display:flex; flex-direction:column; gap:8px;
+  font-size:11px; color:var(--text3);
 }}
 .t-item {{ display:flex; align-items:center; gap:6px; white-space:nowrap; }}
 .t-item label {{ color:var(--text2); }}
 .t-item input[type="range"] {{
-  width:90px; accent-color:var(--accent); cursor:pointer;
+  width:100%; accent-color:var(--accent); cursor:pointer;
 }}
 .t-val {{ min-width:32px; text-align:right; color:var(--text); font-family:var(--mono); }}
 .t-btn {{
@@ -1883,16 +1887,6 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
   </select>
   <span class="sep">|</span>
   <span class="stats" id="statsLabel">{total_funcs} функций · {total_func_edges} вызовов</span>
-  <div id="tuning" title="Настройка раскладки (только для текущего режима)">
-    <div class="t-item"><label>dist</label><input id="tDist" type="range" min="60" max="320" step="5"><span id="vDist" class="t-val"></span></div>
-    <div class="t-item"><label>link</label><input id="tLink" type="range" min="0.05" max="0.9" step="0.01"><span id="vLink" class="t-val"></span></div>
-    <div class="t-item"><label>charge</label><input id="tCharge" type="range" min="-2000" max="-50" step="10"><span id="vCharge" class="t-val"></span></div>
-    <div class="t-item"><label>pad</label><input id="tPad" type="range" min="0" max="40" step="1"><span id="vPad" class="t-val"></span></div>
-    <div class="t-item"><label>iter</label><input id="tIters" type="range" min="1" max="6" step="1"><span id="vIters" class="t-val"></span></div>
-    <button class="t-btn" onclick="resetTuning()">reset</button>
-    <button class="t-btn" onclick="copyCli()">copy all</button>
-    <button class="t-btn" onclick="copyCliMode()">copy mode</button>
-  </div>
   <input id="searchBox" type="text" placeholder="🔍 Поиск функции..." autocomplete="off">
 </div>
 
@@ -1914,6 +1908,17 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
       <button class="ctrl-btn" onclick="resetZoom()" title="Сброс">⌂</button>
       <button class="ctrl-btn" id="btnHulls" onclick="toggleHulls()" title="Группы файлов">▦</button>
     </div>
+  </div>
+
+  <div id="tuning" title="Настройка раскладки (только для текущего режима)">
+    <div class="t-item"><label>dist</label><input id="tDist" type="range" min="60" max="320" step="5"><span id="vDist" class="t-val"></span></div>
+    <div class="t-item"><label>link</label><input id="tLink" type="range" min="0.05" max="0.9" step="0.01"><span id="vLink" class="t-val"></span></div>
+    <div class="t-item"><label>charge</label><input id="tCharge" type="range" min="-2000" max="-50" step="10"><span id="vCharge" class="t-val"></span></div>
+    <div class="t-item"><label>pad</label><input id="tPad" type="range" min="0" max="40" step="1"><span id="vPad" class="t-val"></span></div>
+    <div class="t-item"><label>iter</label><input id="tIters" type="range" min="1" max="6" step="1"><span id="vIters" class="t-val"></span></div>
+    <button class="t-btn" onclick="resetTuning()">reset</button>
+    <button class="t-btn" onclick="copyCli()">copy all</button>
+    <button class="t-btn" onclick="copyCliMode()">copy mode</button>
   </div>
 
   <div id="panel" class="collapsed">
@@ -1947,6 +1952,7 @@ let selectedNodes  = new Set();   // ids выбранных узлов (ctrl+cli
 let currentNodes   = [];
 let currentLinks   = [];
 let nodeEdges      = {{}};
+let currentRScale  = null;
 
 // ── Tuning (UI) ─────────────────────────────────────────────────────────────
 function _modeKey(base) {{
@@ -1996,8 +2002,10 @@ function applyTuning() {{
   const chargeForce = simulation.force('charge');
   if (chargeForce) chargeForce.strength(chargeStrength);
   const collideForce = simulation.force('collide');
-  if (collideForce) collideForce.radius(d => rScale((d.n_calls||0)+(d.n_callers||0)) + collidePad)
-                              .iterations(collideIters);
+  if (collideForce && currentRScale) {{
+    collideForce.radius(d => currentRScale((d.n_calls||0)+(d.n_callers||0)) + collidePad)
+                .iterations(collideIters);
+  }}
   simulation.alpha(0.9).restart();
 }}
 
@@ -2185,6 +2193,7 @@ function drawGraph(mode) {{
   // Scales
   const maxDeg = Math.max(1, ...nodes.map(n => (n.n_calls||0) + (n.n_callers||0)));
   const rScale = d3.scaleSqrt().domain([0, maxDeg]).range(mode === 'file' ? [12,36] : [5,18]);
+  currentRScale = rScale;
 
   function nodeColor(n) {{
     if (mode === 'file') return COLOR_MAP[n.id]  || '#58a6ff';
