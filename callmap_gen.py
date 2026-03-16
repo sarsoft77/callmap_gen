@@ -2026,14 +2026,14 @@ function buildCliCommand() {{
   const parts = [
     'python callmap_gen.py .',
     '--format graph',
-    `--graph-link-dist-file ${cfg.link_distance_file}`,
-    `--graph-link-dist-func ${cfg.link_distance_func}`,
-    `--graph-link-strength-file ${cfg.link_strength_file.toFixed(2)}`,
-    `--graph-link-strength-func ${cfg.link_strength_func.toFixed(2)}`,
-    `--graph-charge-file ${cfg.charge_file}`,
-    `--graph-charge-func ${cfg.charge_func}`,
-    `--graph-collide-pad ${cfg.collide_pad}`,
-    `--graph-collide-iters ${cfg.collide_iters}`,
+    `--graph-link-dist-file ${{cfg.link_distance_file}}`,
+    `--graph-link-dist-func ${{cfg.link_distance_func}}`,
+    `--graph-link-strength-file ${{cfg.link_strength_file.toFixed(2)}}`,
+    `--graph-link-strength-func ${{cfg.link_strength_func.toFixed(2)}}`,
+    `--graph-charge-file ${{cfg.charge_file}}`,
+    `--graph-charge-func ${{cfg.charge_func}}`,
+    `--graph-collide-pad ${{cfg.collide_pad}}`,
+    `--graph-collide-iters ${{cfg.collide_iters}}`,
   ];
   return parts.join(' ');
 }}
@@ -2044,16 +2044,16 @@ function buildCliCommandMode() {{
     '--format graph',
   ];
   if (currentMode === 'file') {{
-    parts.push(`--graph-link-dist-file ${cfg.link_distance_file}`);
-    parts.push(`--graph-link-strength-file ${cfg.link_strength_file.toFixed(2)}`);
-    parts.push(`--graph-charge-file ${cfg.charge_file}`);
+    parts.push(`--graph-link-dist-file ${{cfg.link_distance_file}}`);
+    parts.push(`--graph-link-strength-file ${{cfg.link_strength_file.toFixed(2)}}`);
+    parts.push(`--graph-charge-file ${{cfg.charge_file}}`);
   }} else {{
-    parts.push(`--graph-link-dist-func ${cfg.link_distance_func}`);
-    parts.push(`--graph-link-strength-func ${cfg.link_strength_func.toFixed(2)}`);
-    parts.push(`--graph-charge-func ${cfg.charge_func}`);
+    parts.push(`--graph-link-dist-func ${{cfg.link_distance_func}}`);
+    parts.push(`--graph-link-strength-func ${{cfg.link_strength_func.toFixed(2)}}`);
+    parts.push(`--graph-charge-func ${{cfg.charge_func}}`);
   }}
-  parts.push(`--graph-collide-pad ${cfg.collide_pad}`);
-  parts.push(`--graph-collide-iters ${cfg.collide_iters}`);
+  parts.push(`--graph-collide-pad ${{cfg.collide_pad}}`);
+  parts.push(`--graph-collide-iters ${{cfg.collide_iters}}`);
   return parts.join(' ');
 }}
 
