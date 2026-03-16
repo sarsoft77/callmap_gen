@@ -2083,11 +2083,19 @@ function drawGraph(mode) {{
     return isFinite(minT) ? minT : 60;
   }}
 
+  // Параметры сил подравниваем так, чтобы узлы распределялись ровнее
+  // и меньше кучковались в плотные "шары".
+  const linkDistance  = mode === 'file' ? 180 : 120;
+  const linkStrength  = mode === 'file' ? 0.40 : 0.32;
+  const chargeStrength = mode === 'file' ? -900 : -320;
+  const collideRadius = d => rScale((d.n_calls||0)+(d.n_callers||0)) + 10;
+  const collideIters  = mode === 'file' ? 2 : 2;
+
   simulation = d3.forceSimulation(nodes)
-    .force('link',    d3.forceLink(links).id(d=>d.id).distance(mode==='file'?140:80).strength(0.5))
-    .force('charge',  d3.forceManyBody().strength(mode==='file'?-600:-180))
+    .force('link',    d3.forceLink(links).id(d=>d.id).distance(linkDistance).strength(linkStrength))
+    .force('charge',  d3.forceManyBody().strength(chargeStrength))
     .force('center',  d3.forceCenter(W/2, H/2))
-    .force('collide', d3.forceCollide().radius(d => rScale((d.n_calls||0)+(d.n_callers||0))+8))
+    .force('collide', d3.forceCollide().radius(collideRadius).iterations(collideIters))
     .on('tick', ticked);
 
   function ticked() {{
