@@ -530,15 +530,28 @@ def build_callers_index(files: list[FileInfo], module_index: dict[str, str]) -> 
                     ))
 
 
-def orphan_files(files: list[FileInfo]) -> list[FileInfo]:
-    """Файлы, ни одна процедура которых не вызывается из другого файла проекта."""
+def orphan_files(files: list[FileInfo], module_index: dict[str, str]) -> list[FileInfo]:
+    """Файлы, которые не вызываются извне и сами не вызывают другие файлы проекта."""
     result = []
     for f in files:
         has_external_caller = any(
             any(c.rel_path != f.rel_path for c in proc.callers)
             for proc in f.procedures
         )
-        if not has_external_caller:
+
+        has_outgoing_external = False
+        for proc in f.procedures:
+            for call in proc.calls:
+                if not call.callee_module or call.callee_module == _VAR_:
+                    continue
+                target_rel = resolve_module_to_file(call.callee_module, module_index)
+                if target_rel and target_rel != f.rel_path:
+                    has_outgoing_external = True
+                    break
+            if has_outgoing_external:
+                break
+
+        if not has_external_caller and not has_outgoing_external:
             result.append(f)
     return result
 
@@ -578,10 +591,10 @@ def render_markdown(files: list[FileInfo], module_index: dict[str, str], project
     lines.append("---\n")
 
     # ── Модули-сироты ──────────────────────────────────────────────────────────
-    orphans = orphan_files(files)
+    orphans = orphan_files(files, module_index)
     if orphans:
-        lines.append("## ⚠️ Модули без входящих вызовов\n")
-        lines.append("> Файлы, ни одна функция которых не вызывается из других модулей проекта.\n")
+        lines.append("## ⚠️ Модули-сироты\n")
+        lines.append("> Файлы, которые не вызываются извне и сами не вызывают другие файлы проекта.\n")
         for f in orphans:
             anchor = _anchor(f"file-{f.rel_path}")
             n_procs = len(f.procedures)
@@ -864,8 +877,8 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
 
     sidebar_html = "\n".join(sidebar_items)
 
-    # ── Виджет «Модули без входящих вызовов» ──────────────────────────────────
-    orphans = orphan_files(files)
+    # ── Виджет «Модули-сироты» ────────────────────────────────────────────────
+    orphans = orphan_files(files, module_index)
     if orphans:
         rows = []
         for f in orphans:
@@ -883,11 +896,11 @@ def render_html(files: list[FileInfo], module_index: dict[str, str], project_nam
             '<section class="orp-section" id="orphan-modules">' +
             '<div class="orp-header">' +
             '  <span class="orp-icon">⚠️</span>' +
-            f'  <h2 class="orp-title">Модули без входящих вызовов</h2>' +
+            f'  <h2 class="orp-title">Модули-сироты</h2>' +
             f'  <span class="orp-badge">{len(orphans)}</span>' +
             '</div>' +
-            '<p class="orp-desc">Ни одна функция этих файлов не вызывается из других модулей проекта. ' +
-            'Возможно, это точки входа, устаревший код или изолированные утилиты.</p>' +
+            '<p class="orp-desc">Эти файлы не вызываются извне и сами не вызывают другие файлы проекта. ' +
+            'Это могут быть устаревшие части, изолированные утилиты или забытые подмодули.</p>' +
             '<table class="orp-table">' +
             '<thead><tr><th>Файл</th><th title="Процедур">Проц.</th><th title="Исходящих вызовов">Вызовов</th></tr></thead>' +
             f'<tbody>{"".join(rows)}</tbody>' +
@@ -1726,6 +1739,10 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
   display:flex; flex-direction:column; gap:8px;
   font-size:11px; color:var(--text3);
 }}
+#tuning.collapsed {{
+  width:0; min-width:0; padding:0;
+  border-left:none; border-right:none; overflow:hidden;
+}}
 .t-item {{ display:flex; align-items:center; gap:6px; white-space:nowrap; }}
 .t-item label {{ color:var(--text2); }}
 .t-item input[type="range"] {{
@@ -1885,6 +1902,7 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
   <select id="fileFilter" onchange="applyFileFilter()" title="Фильтр по файлу">
     <option value="">📂 Все файлы</option>
   </select>
+  <button class="mode-btn" id="btnTuning" onclick="toggleTuning()" title="Показать/скрыть панель настроек">Настройки</button>
   <span class="sep">|</span>
   <span class="stats" id="statsLabel">{total_funcs} функций · {total_func_edges} вызовов</span>
   <input id="searchBox" type="text" placeholder="🔍 Поиск функции..." autocomplete="off">
@@ -2279,11 +2297,14 @@ function drawGraph(mode) {{
   const collideRadius  = d => rScale((d.n_calls||0)+(d.n_callers||0)) + cfg.collide_pad;
   const collideIters   = cfg.collide_iters;
 
+  const orphanRadius = Math.min(W, H) * 0.35;
   simulation = d3.forceSimulation(nodes)
     .force('link',    d3.forceLink(links).id(d=>d.id).distance(linkDistance).strength(linkStrength))
     .force('charge',  d3.forceManyBody().strength(chargeStrength))
     .force('center',  d3.forceCenter(W/2, H/2))
     .force('collide', d3.forceCollide().radius(collideRadius).iterations(collideIters))
+    .force('orphan',  d3.forceRadial(orphanRadius, W/2, H/2)
+      .strength(d => (((d.n_calls||0)+(d.n_callers||0))===0) ? 0.08 : 0))
     .on('tick', ticked);
 
   function ticked() {{
@@ -2657,6 +2678,15 @@ function toggleHulls() {{
     hullSel.selectAll('*').remove();
     hullLabelSel.selectAll('*').remove();
   }}
+}}
+
+// ── Tuning panel toggle ─────────────────────────────────────────────────────
+function toggleTuning() {{
+  const panel = document.getElementById('tuning');
+  const btn = document.getElementById('btnTuning');
+  if (!panel || !btn) return;
+  const hidden = panel.classList.toggle('collapsed');
+  btn.textContent = hidden ? 'Показать настройки' : 'Настройки';
 }}
 
 // ── Mode switch ──────────────────────────────────────────────────────────────
