@@ -1630,13 +1630,14 @@ def _build_graph_data(files: list[FileInfo], module_index: dict[str, str]) -> di
 
 
 
-def render_graph(files: list[FileInfo], module_index: dict[str, str], project_name: str) -> str:
+def render_graph(files: list[FileInfo], module_index: dict[str, str], project_name: str, graph_params: dict) -> str:
     import json as _json
     from datetime import datetime
 
     graph_data  = _build_graph_data(files, module_index)
     generated_at = datetime.now().strftime("%d.%m.%Y %H:%M")
     data_json   = _json.dumps(graph_data, ensure_ascii=False)
+    graph_params_json = _json.dumps(graph_params, ensure_ascii=False)
 
     # Цвет по директории
     dirs = sorted(set(
@@ -1714,6 +1715,24 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
 }}
 #searchBox:focus  {{ border-color:var(--accent); }}
 #searchBox::placeholder {{ color:var(--text3); }}
+
+/* ── Tuning ── */
+#tuning {{
+  display:flex; align-items:center; gap:10px; margin-left:14px;
+  padding:4px 8px; background:var(--bg3); border:1px solid var(--border);
+  border-radius:8px; font-size:11px; color:var(--text3);
+}}
+.t-item {{ display:flex; align-items:center; gap:6px; white-space:nowrap; }}
+.t-item label {{ color:var(--text2); }}
+.t-item input[type="range"] {{
+  width:90px; accent-color:var(--accent); cursor:pointer;
+}}
+.t-val {{ min-width:32px; text-align:right; color:var(--text); font-family:var(--mono); }}
+.t-btn {{
+  border:1px solid var(--border); background:transparent; color:var(--text2);
+  padding:2px 8px; border-radius:6px; cursor:pointer; font-size:11px;
+}}
+.t-btn:hover {{ background:var(--bg4); color:var(--text); }}
 
 /* ── Layout ── */
 #layout {{ position:fixed; top:48px; left:0; right:0; bottom:0; display:flex; }}
@@ -1864,6 +1883,16 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
   </select>
   <span class="sep">|</span>
   <span class="stats" id="statsLabel">{total_funcs} функций · {total_func_edges} вызовов</span>
+  <div id="tuning" title="Настройка раскладки (только для текущего режима)">
+    <div class="t-item"><label>dist</label><input id="tDist" type="range" min="60" max="320" step="5"><span id="vDist" class="t-val"></span></div>
+    <div class="t-item"><label>link</label><input id="tLink" type="range" min="0.05" max="0.9" step="0.01"><span id="vLink" class="t-val"></span></div>
+    <div class="t-item"><label>charge</label><input id="tCharge" type="range" min="-2000" max="-50" step="10"><span id="vCharge" class="t-val"></span></div>
+    <div class="t-item"><label>pad</label><input id="tPad" type="range" min="0" max="40" step="1"><span id="vPad" class="t-val"></span></div>
+    <div class="t-item"><label>iter</label><input id="tIters" type="range" min="1" max="6" step="1"><span id="vIters" class="t-val"></span></div>
+    <button class="t-btn" onclick="resetTuning()">reset</button>
+    <button class="t-btn" onclick="copyCli()">copy all</button>
+    <button class="t-btn" onclick="copyCliMode()">copy mode</button>
+  </div>
   <input id="searchBox" type="text" placeholder="🔍 Поиск функции..." autocomplete="off">
 </div>
 
@@ -1901,6 +1930,8 @@ html,body {{ width:100%; height:100%; overflow:hidden; background:var(--bg); col
 <script>
 // ── Data ────────────────────────────────────────────────────────────────────
 const DATA      = {data_json};
+const GRAPH_CFG = {graph_params_json};
+const cfg = {{ ...GRAPH_CFG }};
 const COLOR_MAP = {color_map_json};
 const FILE_LIST = {file_list_json};
 
@@ -1916,6 +1947,153 @@ let selectedNodes  = new Set();   // ids выбранных узлов (ctrl+cli
 let currentNodes   = [];
 let currentLinks   = [];
 let nodeEdges      = {{}};
+
+// ── Tuning (UI) ─────────────────────────────────────────────────────────────
+function _modeKey(base) {{
+  return base + (currentMode === 'file' ? '_file' : '_func');
+}}
+
+function _setVal(id, v) {{
+  const el = document.getElementById(id);
+  const valEl = document.getElementById('v' + id.slice(1));
+  if (!el || !valEl) return;
+  el.value = v;
+  valEl.textContent = (typeof v === 'number' && !Number.isInteger(v)) ? v.toFixed(2) : v;
+}}
+
+function updateTuningUI() {{
+  _setVal('tDist',   cfg[_modeKey('link_distance')]);
+  _setVal('tLink',   cfg[_modeKey('link_strength')]);
+  _setVal('tCharge', cfg[_modeKey('charge')]);
+  _setVal('tPad',    cfg.collide_pad);
+  _setVal('tIters',  cfg.collide_iters);
+}}
+
+function readTuningUI() {{
+  const dist   = parseFloat(document.getElementById('tDist').value);
+  const link   = parseFloat(document.getElementById('tLink').value);
+  const charge = parseFloat(document.getElementById('tCharge').value);
+  const pad    = parseFloat(document.getElementById('tPad').value);
+  const iters  = parseInt(document.getElementById('tIters').value, 10);
+
+  cfg[_modeKey('link_distance')] = dist;
+  cfg[_modeKey('link_strength')] = link;
+  cfg[_modeKey('charge')]        = charge;
+  cfg.collide_pad   = pad;
+  cfg.collide_iters = iters;
+}}
+
+function applyTuning() {{
+  if (!simulation) return;
+  const linkDistance   = cfg[_modeKey('link_distance')];
+  const linkStrength   = cfg[_modeKey('link_strength')];
+  const chargeStrength = cfg[_modeKey('charge')];
+  const collidePad     = cfg.collide_pad;
+  const collideIters   = cfg.collide_iters;
+
+  const linkForce = simulation.force('link');
+  if (linkForce) linkForce.distance(linkDistance).strength(linkStrength);
+  const chargeForce = simulation.force('charge');
+  if (chargeForce) chargeForce.strength(chargeStrength);
+  const collideForce = simulation.force('collide');
+  if (collideForce) collideForce.radius(d => rScale((d.n_calls||0)+(d.n_callers||0)) + collidePad)
+                              .iterations(collideIters);
+  simulation.alpha(0.9).restart();
+}}
+
+function resetTuning() {{
+  Object.assign(cfg, GRAPH_CFG);
+  updateTuningUI();
+  applyTuning();
+}}
+
+function wireTuning() {{
+  ['tDist','tLink','tCharge','tPad','tIters'].forEach(id => {{
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', () => {{
+      readTuningUI();
+      updateTuningUI();
+      applyTuning();
+    }});
+  }});
+  updateTuningUI();
+}}
+
+function buildCliCommand() {{
+  // Собираем полный набор параметров, чтобы можно было зафиксировать
+  // и FILE, и FUNC значения сразу.
+  const parts = [
+    'python callmap_gen.py .',
+    '--format graph',
+    `--graph-link-dist-file ${cfg.link_distance_file}`,
+    `--graph-link-dist-func ${cfg.link_distance_func}`,
+    `--graph-link-strength-file ${cfg.link_strength_file.toFixed(2)}`,
+    `--graph-link-strength-func ${cfg.link_strength_func.toFixed(2)}`,
+    `--graph-charge-file ${cfg.charge_file}`,
+    `--graph-charge-func ${cfg.charge_func}`,
+    `--graph-collide-pad ${cfg.collide_pad}`,
+    `--graph-collide-iters ${cfg.collide_iters}`,
+  ];
+  return parts.join(' ');
+}}
+
+function buildCliCommandMode() {{
+  const parts = [
+    'python callmap_gen.py .',
+    '--format graph',
+  ];
+  if (currentMode === 'file') {{
+    parts.push(`--graph-link-dist-file ${cfg.link_distance_file}`);
+    parts.push(`--graph-link-strength-file ${cfg.link_strength_file.toFixed(2)}`);
+    parts.push(`--graph-charge-file ${cfg.charge_file}`);
+  }} else {{
+    parts.push(`--graph-link-dist-func ${cfg.link_distance_func}`);
+    parts.push(`--graph-link-strength-func ${cfg.link_strength_func.toFixed(2)}`);
+    parts.push(`--graph-charge-func ${cfg.charge_func}`);
+  }}
+  parts.push(`--graph-collide-pad ${cfg.collide_pad}`);
+  parts.push(`--graph-collide-iters ${cfg.collide_iters}`);
+  return parts.join(' ');
+}}
+
+function copyCli() {{
+  const cmd = buildCliCommand();
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(cmd).then(() => {{
+      const btns = document.querySelectorAll('#tuning .t-btn');
+      const btn = btns[btns.length - 2];
+      if (btn) {{
+        const prev = btn.textContent;
+        btn.textContent = 'copied';
+        setTimeout(() => btn.textContent = prev, 1200);
+      }}
+    }}).catch(() => {{
+      prompt('Скопируйте команду:', cmd);
+    }});
+  }} else {{
+    prompt('Скопируйте команду:', cmd);
+  }}
+}}
+
+function copyCliMode() {{
+  const cmd = buildCliCommandMode();
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(cmd).then(() => {{
+      const btns = document.querySelectorAll('#tuning .t-btn');
+      const btn = btns[btns.length - 1];
+      if (btn) {{
+        const prev = btn.textContent;
+        btn.textContent = 'copied';
+        setTimeout(() => btn.textContent = prev, 1200);
+      }}
+    }}).catch(() => {{
+      prompt('Скопируйте команду:', cmd);
+    }});
+  }} else {{
+    prompt('Скопируйте команду:', cmd);
+  }}
+}}
 
 // ── Init ────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {{
@@ -1949,6 +2127,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   }});
 
   document.getElementById('searchBox').addEventListener('input', onSearch);
+  wireTuning();
 
   drawGraph('func');
 }});
@@ -2085,11 +2264,11 @@ function drawGraph(mode) {{
 
   // Параметры сил подравниваем так, чтобы узлы распределялись ровнее
   // и меньше кучковались в плотные "шары".
-  const linkDistance  = mode === 'file' ? 180 : 120;
-  const linkStrength  = mode === 'file' ? 0.40 : 0.32;
-  const chargeStrength = mode === 'file' ? -900 : -320;
-  const collideRadius = d => rScale((d.n_calls||0)+(d.n_callers||0)) + 10;
-  const collideIters  = mode === 'file' ? 2 : 2;
+  const linkDistance   = mode === 'file' ? cfg.link_distance_file : cfg.link_distance_func;
+  const linkStrength   = mode === 'file' ? cfg.link_strength_file : cfg.link_strength_func;
+  const chargeStrength = mode === 'file' ? cfg.charge_file : cfg.charge_func;
+  const collideRadius  = d => rScale((d.n_calls||0)+(d.n_callers||0)) + cfg.collide_pad;
+  const collideIters   = cfg.collide_iters;
 
   simulation = d3.forceSimulation(nodes)
     .force('link',    d3.forceLink(links).id(d=>d.id).distance(linkDistance).strength(linkStrength))
@@ -2479,6 +2658,7 @@ function setMode(mode) {{
   document.getElementById('fileFilter').value = '';
   document.getElementById('searchBox').value  = '';
   document.getElementById('fileFilter').style.display = mode==='func' ? '' : 'none';
+  updateTuningUI();
   drawGraph(mode);
   setTimeout(resetZoom, 700);
 }}
@@ -2544,6 +2724,55 @@ def main():
         type=int,
         default=0,
         help="Показывать только процедуры с >= N вызовами (default: 0 — все)",
+    )
+    # Параметры раскладки графа (D3)
+    parser.add_argument(
+        "--graph-link-dist-file",
+        type=float,
+        default=180,
+        help="Длина рёбер в режиме FILE (default: 180)",
+    )
+    parser.add_argument(
+        "--graph-link-dist-func",
+        type=float,
+        default=120,
+        help="Длина рёбер в режиме FUNC (default: 120)",
+    )
+    parser.add_argument(
+        "--graph-link-strength-file",
+        type=float,
+        default=0.40,
+        help="Сила стягивания рёбер в режиме FILE (default: 0.40)",
+    )
+    parser.add_argument(
+        "--graph-link-strength-func",
+        type=float,
+        default=0.32,
+        help="Сила стягивания рёбер в режиме FUNC (default: 0.32)",
+    )
+    parser.add_argument(
+        "--graph-charge-file",
+        type=float,
+        default=-900,
+        help="Отталкивание узлов в режиме FILE (default: -900)",
+    )
+    parser.add_argument(
+        "--graph-charge-func",
+        type=float,
+        default=-320,
+        help="Отталкивание узлов в режиме FUNC (default: -320)",
+    )
+    parser.add_argument(
+        "--graph-collide-pad",
+        type=float,
+        default=10,
+        help="Доп. радиус коллизии (default: 10)",
+    )
+    parser.add_argument(
+        "--graph-collide-iters",
+        type=int,
+        default=2,
+        help="Итерации коллизии (default: 2)",
     )
     args = parser.parse_args()
 
@@ -2617,12 +2846,23 @@ def main():
     total_callers = sum(len(p.callers) for f in files for p in f.procedures)
     print(f"   Связей caller→callee: {total_callers}")
 
+    graph_params = {
+        "link_distance_file": args.graph_link_dist_file,
+        "link_distance_func": args.graph_link_dist_func,
+        "link_strength_file": args.graph_link_strength_file,
+        "link_strength_func": args.graph_link_strength_func,
+        "charge_file": args.graph_charge_file,
+        "charge_func": args.graph_charge_func,
+        "collide_pad": args.graph_collide_pad,
+        "collide_iters": args.graph_collide_iters,
+    }
+
     for out_path, out_fmt in outputs:
         print(f"\n📝 Генерация {out_fmt.upper()}...")
         if out_fmt == "html":
             content = render_html(files, module_index, project_name)
         elif out_fmt == "graph":
-            content = render_graph(files, module_index, project_name)
+            content = render_graph(files, module_index, project_name, graph_params)
         else:
             content = render_markdown(files, module_index, project_name)
 
